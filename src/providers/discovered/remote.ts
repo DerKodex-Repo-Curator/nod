@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { RequestOptions } from '@modelcontextprotocol/sdk/shared/protocol.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { isPublicAddress, publicUrl } from '../agent-browser/network.ts';
 import type { DiscoveredTool, DiscoveredTransport } from '../../ports/discovered.ts';
 import { appFile, mcpFiles } from '../app-files.ts';
@@ -205,8 +206,7 @@ function poolFor(request: typeof safeRemoteFetch) {
 }
 
 function release(pool: Map<string, PooledClient>, key: string, entry: PooledClient) {
-  if (pool.get(key) !== entry) return;
-  pool.delete(key);
+  if (pool.get(key) === entry) pool.delete(key);
   clearTimeout(entry.timer);
   void entry.ready.then((client) => client.close()).catch(() => {});
 }
@@ -277,8 +277,6 @@ async function withRemoteMcp<T>(
   const current = entry;
   current.active++;
   clearTimeout(current.timer);
-  const abort = () => release(pool, key, current);
-  signal?.addEventListener('abort', abort, { once: true });
   try {
     const client = await (signal
       ? Promise.race([
@@ -297,14 +295,20 @@ async function withRemoteMcp<T>(
     signal?.throwIfAborted();
     return result;
   } catch (cause) {
-    release(pool, key, current);
+    const alone =
+      signal?.aborted || (cause instanceof McpError && cause.code !== ErrorCode.ConnectionClosed);
+    if (current.active > 1 && alone) {
+      if (pool.get(key) === current) pool.delete(key);
+    } else release(pool, key, current);
     throw cause;
   } finally {
-    signal?.removeEventListener('abort', abort);
     current.active--;
-    if (!current.active && pool.get(key) === current) {
-      current.timer = setTimeout(() => release(pool, key, current), idleMs);
-      current.timer.unref();
+    if (!current.active) {
+      if (pool.get(key) !== current) release(pool, key, current);
+      else {
+        current.timer = setTimeout(() => release(pool, key, current), idleMs);
+        current.timer.unref();
+      }
     }
   }
 }
