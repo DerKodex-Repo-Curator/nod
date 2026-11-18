@@ -76,7 +76,7 @@ export async function safeRemoteFetch(
 ): Promise<Response> {
   const prepared = new Request(input, init);
   if (!prepared.headers.has('user-agent')) prepared.headers.set('user-agent', 'nod/0.1.0');
-  const deadline = Date.now() + 3_600_000;
+  let deadline = Date.now() + 3_600_000;
   const idle = new AbortController();
   let response: IncomingMessage | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -141,6 +141,11 @@ export async function safeRemoteFetch(
         },
         (incoming) => {
           response = incoming;
+          if (
+            /text\/event-stream/i.test(prepared.headers.get('accept') ?? '') &&
+            /^text\/event-stream\b/i.test(incoming.headers['content-type'] ?? '')
+          )
+            deadline = Infinity;
           wait();
           if (incoming.statusCode && incoming.statusCode >= 300 && incoming.statusCode < 400) {
             clearTimeout(timer);

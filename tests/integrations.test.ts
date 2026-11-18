@@ -13605,7 +13605,12 @@ test('discovered requests stay open while data arrives and end after ten silent 
     const outbound = Object.assign(new EventEmitter(), { end() {} });
     const incoming = Object.assign(new PassThrough(), {
       statusCode: moved ? 307 : 200,
-      headers: moved ? { location: '/' } : { 'content-type': 'text/event-stream' },
+      headers: moved
+        ? { location: '/' }
+        : {
+            'content-type':
+              url.pathname === '/export' ? 'application/octet-stream' : 'text/event-stream',
+          },
     });
     options.signal.addEventListener(
       'abort',
@@ -13621,11 +13626,11 @@ test('discovered requests stay open while data arrives and end after ten silent 
     return outbound;
   }) as unknown as NonNullable<Parameters<typeof safeRemoteFetch>[2]>['request'];
   const validate = async (value: string) => ({ url: new URL(value), address: '93.184.216.34' });
-  const open = async (path: string) =>
+  const open = async (path: string, accept = 'application/json, text/event-stream') =>
     (
       await safeRemoteFetch(
         `https://mcp.fixture.example${path}`,
-        { method: 'POST', body: '{}' },
+        { method: 'POST', body: '{}', headers: { accept } },
         { validate, request },
       )
     ).body!.getReader();
@@ -13652,13 +13657,27 @@ test('discovered requests stay open while data arrives and end after ten silent 
   await new Promise((resolve) => setImmediate(resolve));
   t.mock.timers.tick(10 * 60_000);
   await assert.rejects(hanging, /sent nothing for 10 minutes/);
-  const endless = await open('/');
-  for (let minute = 0; minute < 60; minute += 5) {
-    streams.at(-1)!.write('event: progress\n\n');
-    await endless.read();
+  const events = await open('/');
+  const eventStream = streams.at(-1)!;
+  for (let minute = 0; minute < 90; minute += 5) {
+    eventStream.write('event: progress\n\n');
+    await events.read();
     t.mock.timers.tick(5 * 60_000);
   }
-  await assert.rejects(endless.read(), /did not finish within an hour/);
+  eventStream.end();
+  assert.equal((await events.read()).done, true);
+  for (const [path, accept] of [
+    ['/export', undefined],
+    ['/', 'application/json'],
+  ] as const) {
+    const trickle = await open(path, accept);
+    for (let minute = 0; minute < 60; minute += 5) {
+      streams.at(-1)!.write('x');
+      await trickle.read();
+      t.mock.timers.tick(5 * 60_000);
+    }
+    await assert.rejects(trickle.read(), /did not finish within an hour/);
+  }
 });
 
 test(
